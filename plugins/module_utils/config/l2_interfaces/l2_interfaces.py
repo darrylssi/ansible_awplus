@@ -85,8 +85,9 @@ class L2_interfaces(ConfigBase):
         if commands:
             if not self._module.check_mode:
                 warning = self._connection.edit_config(commands).get("response")
-                if warning[-1] != "":
-                    warnings = warning[-1]
+                for warn in warning:
+                    if warn != "":
+                        warnings.append(warn)
             changed_l2_interfaces_facts = self.get_l2_interfaces_facts()
             if existing_l2_interfaces_facts != changed_l2_interfaces_facts:
                 result["changed"] = True
@@ -144,17 +145,44 @@ class L2_interfaces(ConfigBase):
             commands = self._state_replaced(want, have, self._module)
         return commands
 
+    def get_port_info(self, port_name):
+        if "port" in port_name:
+            port = re.search(r"port(\d+).(\d+).(\d+)", port_name)
+            if port:
+                return [port.group(1), port.group(2), port.group(3)]
+        elif "." in port_name:
+            port = re.search(r"(\d+).(\d+).(\d+)", port_name)
+            if port:
+                return [port.group(1), port.group(2), port.group(3)]
+        return None
+
     def is_in_ports(self, want, have):
-        if "-" in have:
-            have_ports = re.search(r"(port1.0.)(\d+)(-1.0.)(\d+)", have)
-            if have_ports:
-                min_ = int(have_ports.group(2))
-                max_ = int(have_ports.group(4))
-                want_port = re.search(r"(port1.0.)(\d+)", want)
-                return min_ <= int(want_port.group(2)) <= max_
-        elif want == have:
+        if "-" in have: # range in config
+            have_port = re.search(r"(\S+)-(\S+)", have)
+            if have_port:
+                h_min = self.get_port_info(have_port.group(1))
+                h_max = self.get_port_info(have_port.group(2))
+            if "-" in want: # range input
+                want_port = re.search(r"(\S+)-(\S+)", want)
+                if want_port:
+                    w_min = self.get_port_info(want_port.group(1))
+                    w_max = self.get_port_info(want_port.group(2))
+            else: # single port input
+                w_min = self.get_port_info(want)
+                w_max = w_min
+
+            for i in range(3): # input out of config range
+                if w_min[i] < h_min[i]:
+                    return False
+            for i in range(3):
+                if w_max[i] > h_max[i]:
+                    return False
+
+        elif want == have: # single port input and config
             return True
-        return False
+        else: # single config, range input
+            return False
+        return True # port in range
 
     def _state_replaced(self, want, have, module):
         """ The command generator when state is replaced
@@ -296,9 +324,7 @@ class L2_interfaces(ConfigBase):
         want_trunk = dict(want_dict).get("trunk")
         have_trunk = dict(have_dict).get("trunk")
         if want_trunk and have_trunk:
-            diff = set(tuple(dict(want_dict).get("trunk"))) - set(
-                tuple(dict(have_dict).get("trunk"))
-            )
+            diff = set(tuple(want_trunk)) - set(tuple(have_trunk))
         else:
             diff = want_dict - have_dict
 
